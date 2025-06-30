@@ -9,75 +9,98 @@ import warnings
 from icalendar import Calendar, Event
 import smtplib
 from email.mime.text import MIMEText
+import logging
+from typing import Dict, List, Tuple, Optional, Any
 try:
     from streamlit_calendar import calendar
 except ImportError:
     calendar = None
 
+# ========== SETUP LOGGING ==========
+logging.basicConfig(
+    filename='scheduler.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
 # ========== KONFIGURASI UTAMA ==========
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# Konstanta
-SEMESTER_KELAS = {"TI24": 1, "TI23": 3, "TI22": 5}
-KONSENTRASI_OPTIONS = ["AI", "software", "cybersecurity", "umum"]
-MAX_SKS_SEMESTER = 21
-MAX_SKS_DOSEN = 12
-DURASI_SKS = 50  # menit per SKS
+class Config:
+    SEMESTER_KELAS = {"TI24": 1, "TI23": 3, "TI22": 5}
+    KONSENTRASI_OPTIONS = ["AI", "software", "cybersecurity", "umum"]
+    MAX_SKS_SEMESTER = 21
+    MAX_SKS_DOSEN = 12
+    DURASI_SKS = 50  # menit per SKS
+    MAX_SCHEDULING_ATTEMPTS = 20
+    PRIORITAS_RUANGAN_PREFIX = "B4"
+    
+    HARI_PRIORITAS = {
+        'reguler': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'],
+        'internasional': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'],
+        'sabtu': ['Sabtu'],
+        'karyawan': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'],
+        'reguler malam': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat']
+    }
+    
+    JAM_OPERASIONAL = {
+        'reguler': (dt_time(8, 0), dt_time(17, 0)),
+        'internasional': (dt_time(8, 0), dt_time(17, 0)),
+        'sabtu': (dt_time(8, 0), dt_time(17, 0)),
+        'karyawan': (dt_time(19, 0), dt_time(21, 0)),
+        'reguler malam': (dt_time(19, 0), dt_time(21, 0))
+    }
+    
+    WAKTU_TIDAK_BOLEH = {
+        'Jumat': [(dt_time(11, 30), dt_time(13, 0))],  # Waktu sholat Jumat
+    }
+    
+    ISTIRAHAT = [
+        (dt_time(12, 0), dt_time(13, 0)),  # Istirahat siang
+    ]
+    
+    WARNA_KELAS = {
+        'Online': '#4e79a7',
+        'Offline': '#f28e2b',
+        'Karyawan': '#59a14f',
+        'Sabtu': '#e15759',
+        'Internasional': '#edc948',
+        'AI': '#76b7b2',
+        'software': '#59a14f',
+        'cybersecurity': '#e15759',
+        'Locked': '#d62728',
+        'umum': '#bab0ac'
+    }
+    
+    MATKUL_WAJIB = {
+        1: ['Algoritma dan Struktur Data', 'Logika Informatika', 'Kalkulus', 'Statistika dan Probabilitas'],
+        3: ['Metode Numerik', 'Pemrograman Berbasis Platform', 'Jaringan Komputer dan Keamanan Informasi', 'Rekayasa Perangkat Lunak'],
+        5: ['Proyek Perangkat Lunak', 'Metodologi Penelitian', 'Basis Data']
+    }
 
-# Prioritas penjadwalan
-HARI_PRIORITAS = {
-    'reguler': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'],
-    'internasional': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'],
-    'sabtu': ['Sabtu'],
-    'karyawan': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'],
-    'reguler malam': ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat']
-}
-
-JAM_OPERASIONAL = {
-    'reguler': (dt_time(8, 0), dt_time(17, 0)),
-    'internasional': (dt_time(8, 0), dt_time(17, 0)),
-    'sabtu': (dt_time(8, 0), dt_time(17, 0)),
-    'karyawan': (dt_time(19, 0), dt_time(21, 0)),
-    'reguler malam': (dt_time(19, 0), dt_time(21, 0))
-}
-
-WAKTU_TIDAK_BOLEH = {
-    'Jumat': [(dt_time(11, 30), dt_time(13, 0))],  # Waktu sholat Jumat
-}
-
-ISTIRAHAT = [
-    (dt_time(12, 0), dt_time(13, 0)),  # Istirahat siang
-]
-
-WARNA_KELAS = {
-    'Online': '#4e79a7',
-    'Offline': '#f28e2b',
-    'Karyawan': '#59a14f',
-    'Sabtu': '#e15759',
-    'Internasional': '#edc948',
-    'AI': '#76b7b2',
-    'software': '#59a14f',
-    'cybersecurity': '#e15759',
-    'Locked': '#d62728',
-    'umum': '#bab0ac'
-}
-
-# ========== FUNGSI UTILITAS ==========
-def parse_time(time_str):
-    """Mengubah string waktu menjadi objek time"""
+# ========== UTILITY FUNCTIONS ==========
+def parse_time(time_str: str) -> dt_time:
+    """Mengubah string waktu menjadi objek time dengan error handling"""
     if isinstance(time_str, str):
         try:
             if len(time_str.split(':')) == 2:
                 return datetime.strptime(time_str, '%H:%M').time()
             return datetime.strptime(time_str, '%H:%M:%S').time()
-        except ValueError:
+        except ValueError as e:
+            logging.warning(f"Gagal parse waktu: {time_str}, error: {str(e)}")
             return dt_time(8, 0)
     elif isinstance(time_str, dt_time):
         return time_str
     return dt_time(8, 0)
 
-def generate_time_slots(jam_awal, jam_akhir, durasi_menit, hari, jenis_kelas):
-    """Generate slot waktu yang tersedia"""
+def generate_time_slots(
+    jam_awal: dt_time, 
+    jam_akhir: dt_time, 
+    durasi_menit: int, 
+    hari: str, 
+    jenis_kelas: str
+) -> List[Tuple[dt_time, dt_time]]:
+    """Generate slot waktu yang tersedia dengan penyesuaian khusus"""
     slots = []
     jam_awal = parse_time(jam_awal)
     jam_akhir = parse_time(jam_akhir)
@@ -99,7 +122,7 @@ def generate_time_slots(jam_awal, jam_akhir, durasi_menit, hari, jenis_kelas):
         # Cek bentrok dengan waktu istirahat
         is_istirahat = any(
             start <= istirahat_start < end or istirahat_start <= start < istirahat_end 
-            for istirahat_start, istirahat_end in ISTIRAHAT
+            for istirahat_start, istirahat_end in Config.ISTIRAHAT
         )
         
         if is_istirahat:
@@ -107,10 +130,10 @@ def generate_time_slots(jam_awal, jam_akhir, durasi_menit, hari, jenis_kelas):
             continue
         
         # Cek bentrok dengan waktu khusus
-        if hari in WAKTU_TIDAK_BOLEH:
+        if hari in Config.WAKTU_TIDAK_BOLEH:
             is_waktu_khusus = any(
                 start <= waktu_start < end or waktu_start <= start < waktu_end
-                for waktu_start, waktu_end in WAKTU_TIDAK_BOLEH[hari]
+                for waktu_start, waktu_end in Config.WAKTU_TIDAK_BOLEH[hari]
             )
             if is_waktu_khusus:
                 current_time += timedelta(minutes=90)
@@ -121,41 +144,50 @@ def generate_time_slots(jam_awal, jam_akhir, durasi_menit, hari, jenis_kelas):
     
     return slots
 
-def load_data():
-    """Memuat data dari file Excel dengan validasi"""
+def load_data() -> Tuple[pd.DataFrame, ...]:
+    """Memuat data dari file Excel dengan validasi dan error handling"""
     try:
         file_path = "data.xlsx"
         if not os.path.exists(file_path):
+            logging.error("File data.xlsx tidak ditemukan")
             return None, None, None, None, None, None, None
         
         # Baca semua sheet dengan validasi
-        df_kelas = pd.read_excel(file_path, sheet_name="Kelas")
-        df_matkul = pd.read_excel(file_path, sheet_name="matakuliah")
-        df_dosen = pd.read_excel(file_path, sheet_name="Dosen")
-        df_dosen_matkul = pd.read_excel(file_path, sheet_name="dosen_matakuliah")
-        df_hari = pd.read_excel(file_path, sheet_name="Hari")
-        df_ruangan = pd.read_excel(file_path, sheet_name="ruangan")
+        sheets = {
+            "Kelas": None,
+            "matakuliah": None,
+            "Dosen": None,
+            "dosen_matakuliah": None,
+            "Hari": None,
+            "ruangan": None,
+            "availability": pd.DataFrame(columns=['dosen', 'hari', 'jam_mulai', 'jam_selesai'])
+        }
+        
+        for sheet_name in sheets.keys():
+            try:
+                sheets[sheet_name] = pd.read_excel(file_path, sheet_name=sheet_name)
+                logging.info(f"Berhasil memuat sheet {sheet_name}")
+            except Exception as e:
+                logging.warning(f"Gagal memuat sheet {sheet_name}: {str(e)}")
+                if sheet_name == "availability":
+                    continue
+                return None, None, None, None, None, None, None
         
         # Bersihkan data dosen_matakuliah
-        df_dosen_matkul = df_dosen_matkul.dropna()
+        if sheets["dosen_matakuliah"] is not None:
+            sheets["dosen_matakuliah"] = sheets["dosen_matakuliah"].dropna()
         
         # Perbaiki typo di status matkul
-        if 'Status' in df_matkul.columns:
-            df_matkul['Status'] = df_matkul['Status'].str.replace('offlilne', 'offline')
+        if sheets["matakuliah"] is not None and 'Status' in sheets["matakuliah"].columns:
+            sheets["matakuliah"]['Status'] = sheets["matakuliah"]['Status'].str.replace('offlilne', 'offline')
         
-        # Coba baca availability jika ada
-        try:
-            df_availability = pd.read_excel(file_path, sheet_name="availability")
-        except:
-            df_availability = pd.DataFrame(columns=['dosen', 'hari', 'jam_mulai', 'jam_selesai'])
-        
-        return df_kelas, df_matkul, df_dosen, df_dosen_matkul, df_hari, df_ruangan, df_availability
+        return tuple(sheets.values())
     except Exception as e:
-        st.error(f"Gagal memuat data: {str(e)}")
+        logging.error(f"Gagal memuat data: {str(e)}")
         return None, None, None, None, None, None, None
 
-def save_to_excel(df, sheet_name):
-    """Menyimpan dataframe ke sheet tertentu dalam file Excel"""
+def save_to_excel(df: pd.DataFrame, sheet_name: str) -> bool:
+    """Menyimpan dataframe ke sheet tertentu dalam file Excel dengan error handling"""
     try:
         file_path = "data.xlsx"
         
@@ -166,32 +198,120 @@ def save_to_excel(df, sheet_name):
         else:
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        logging.info(f"Berhasil menyimpan data ke sheet {sheet_name}")
         return True
     except Exception as e:
-        st.error(f"Gagal menyimpan data: {str(e)}")
+        logging.error(f"Gagal menyimpan data ke sheet {sheet_name}: {str(e)}")
         return False
 
-def init_konsentrasi(df_kelas):
-    """Inisialisasi kolom konsentrasi jika belum ada"""
-    if df_kelas is None:
-        return None
+class ResourceTracker:
+    """Class untuk melacak penggunaan resource (kelas, dosen, ruangan)"""
+    def __init__(self):
+        self.kelas = defaultdict(list)
+        self.dosen = defaultdict(list)
+        self.ruangan = defaultdict(list)
     
-    if 'konsentrasi' not in df_kelas.columns:
-        df_kelas['konsentrasi'] = df_kelas['nama'].apply(
-            lambda x: 'umum' if x[:4] in ['TI24', 'TI23'] else random.choice(['AI', 'software', 'cybersecurity'])
-        )
-    return df_kelas
-
-def prioritize_room(df_ruangan, prefix):
-    """Prioritaskan ruangan berdasarkan prefix tertentu"""
-    if df_ruangan is None:
-        return []
+    def add_schedule(
+        self, 
+        kelas: str, 
+        dosen: str, 
+        ruangan: str, 
+        hari: str, 
+        jam_mulai: dt_time, 
+        jam_selesai: dt_time
+    ) -> None:
+        """Tambahkan jadwal ke resource tracker"""
+        slot = {
+            'hari': hari,
+            'jam_mulai': jam_mulai,
+            'jam_selesai': jam_selesai
+        }
+        
+        self.kelas[kelas].append(slot)
+        self.dosen[dosen].append(slot)
+        if ruangan and ruangan != "Zoom":
+            self.ruangan[ruangan].append(slot)
     
-    prioritized = [r for r in df_ruangan['nama'] if prefix in r]
-    others = [r for r in df_ruangan['nama'] if prefix not in r]
-    return prioritized + others
+    def is_conflict(
+        self, 
+        kelas: str, 
+        dosen: str, 
+        ruangan: str, 
+        hari: str, 
+        jam_mulai: dt_time, 
+        jam_selesai: dt_time
+    ) -> bool:
+        """Cek apakah ada konflik jadwal"""
+        # Cek konflik kelas
+        for slot in self.kelas.get(kelas, []):
+            if slot['hari'] == hari:
+                if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
+                   (jam_mulai < slot['jam_selesai'] <= jam_selesai):
+                    return True
+        
+        # Cek konflik dosen
+        for slot in self.dosen.get(dosen, []):
+            if slot['hari'] == hari:
+                if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
+                   (jam_mulai < slot['jam_selesai'] <= jam_selesai):
+                    return True
+        
+        # Cek konflik ruangan (kecuali online)
+        if ruangan and ruangan != "Zoom":
+            for slot in self.ruangan.get(ruangan, []):
+                if slot['hari'] == hari:
+                    if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
+                       (jam_mulai < slot['jam_selesai'] <= jam_selesai):
+                        return True
+        
+        return False
 
-def filter_matkul_by_konsentrasi(df_matkul, semester, konsentrasi):
+def is_dosen_busy(
+    nama_dosen: str, 
+    hari: str, 
+    jam_mulai: dt_time, 
+    jam_selesai: dt_time, 
+    df_availability: pd.DataFrame, 
+    resource_tracker: ResourceTracker
+) -> bool:
+    """Cek apakah dosen sibuk di waktu tertentu"""
+    # Cek dari availability sheet
+    if not df_availability.empty:
+        busy = df_availability[
+            (df_availability['dosen'] == nama_dosen) &
+            (df_availability['hari'] == hari) &
+            (
+                ((df_availability['jam_mulai'] <= jam_mulai) & (df_availability['jam_selesai'] > jam_mulai)) |
+                ((df_availability['jam_mulai'] < jam_selesai) & (df_availability['jam_selesai'] >= jam_selesai)) |
+                ((jam_mulai <= df_availability['jam_mulai']) & (jam_selesai >= df_availability['jam_selesai']))
+            )
+        ]
+        if not busy.empty:
+            return True
+    
+    # Cek dari resource tracker
+    for slot in resource_tracker.dosen.get(nama_dosen, []):
+        if slot['hari'] == hari:
+            if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
+               (jam_mulai < slot['jam_selesai'] <= jam_selesai) or \
+               (slot['jam_mulai'] <= jam_mulai and slot['jam_selesai'] >= jam_selesai):
+                return True
+    return False
+
+def cek_beban_dosen(nama_dosen: str, df_jadwal: pd.DataFrame) -> bool:
+    """Cek beban mengajar dosen tidak melebihi MAX_SKS_DOSEN"""
+    if df_jadwal.empty or 'Dosen' not in df_jadwal.columns:
+        return True
+    
+    total_sks = df_jadwal[df_jadwal['Dosen'] == nama_dosen]['SKS'].sum()
+    return total_sks < Config.MAX_SKS_DOSEN
+
+def filter_matkul_by_konsentrasi(
+    df_matkul: pd.DataFrame, 
+    semester: int, 
+    konsentrasi: str
+) -> pd.DataFrame:
     """Filter matkul berdasarkan semester dan konsentrasi"""
     if df_matkul is None:
         return pd.DataFrame()
@@ -213,165 +333,250 @@ def filter_matkul_by_konsentrasi(df_matkul, semester, konsentrasi):
     
     return filtered
 
-def adjust_sks(df_matkul):
+def adjust_sks(df_matkul: pd.DataFrame) -> pd.DataFrame:
     """Sesuaikan SKS agar tidak melebihi batas maksimal"""
     if df_matkul.empty:
         return df_matkul
     
     total_sks = df_matkul['sks'].sum()
-    if total_sks <= MAX_SKS_SEMESTER:
+    if total_sks <= Config.MAX_SKS_SEMESTER:
         return df_matkul
     
     # Prioritaskan matkul wajib untuk dipertahankan
-    wajib = ['Algoritma dan Struktur Data', 'Kalkulus', 'Statistika dan Probabilitas', 'Logika Informatika', 'Basis Data']
+    wajib = []
+    for matkul_list in Config.MATKUL_WAJIB.values():
+        wajib.extend(matkul_list)
+    
     df_wajib = df_matkul[df_matkul['nama'].str.contains('|'.join(wajib))]
     df_opsional = df_matkul[~df_matkul['nama'].str.contains('|'.join(wajib))]
     
     # Kurangi dari matkul opsional terlebih dahulu
-    while total_sks > MAX_SKS_SEMESTER and not df_opsional.empty:
+    while total_sks > Config.MAX_SKS_SEMESTER and not df_opsional.empty:
         df_opsional = df_opsional.iloc[:-1]  # Hapus matkul terakhir
         total_sks = df_wajib['sks'].sum() + df_opsional['sks'].sum()
     
     return pd.concat([df_wajib, df_opsional])
 
-def cek_beban_dosen(nama_dosen, df_jadwal):
-    """Cek beban mengajar dosen tidak melebihi MAX_SKS_DOSEN"""
-    if df_jadwal.empty or 'Dosen' not in df_jadwal.columns:
-        return True
+def prioritize_matkul(df_matkul: pd.DataFrame) -> pd.DataFrame:
+    """Prioritaskan matkul berdasarkan SKS dan status wajib"""
+    df = df_matkul.copy()
     
-    total_sks = df_jadwal[df_jadwal['Dosen'] == nama_dosen]['SKS'].sum()
-    return total_sks < MAX_SKS_DOSEN
+    # Tambahkan kolom prioritas
+    df['prioritas'] = df['sks'] * 2  # Matkul dengan SKS lebih besar lebih diprioritaskan
+    
+    # Tingkatkan prioritas untuk matkul wajib
+    wajib = []
+    for matkul_list in Config.MATKUL_WAJIB.values():
+        wajib.extend(matkul_list)
+    
+    df['prioritas'] = df.apply(
+        lambda x: x['prioritas'] + 10 if x['nama'] in wajib else x['prioritas'],
+        axis=1
+    )
+    
+    # Urutkan berdasarkan prioritas (descending)
+    return df.sort_values('prioritas', ascending=False)
 
-def is_dosen_busy(nama_dosen, hari, jam_mulai, jam_selesai, df_availability, resource_tracker):
-    """Cek apakah dosen sibuk di waktu tertentu"""
-    # Cek dari availability sheet
-    if not df_availability.empty:
-        busy = df_availability[
-            (df_availability['dosen'] == nama_dosen) &
-            (df_availability['hari'] == hari) &
-            (
-                ((df_availability['jam_mulai'] <= jam_mulai) & (df_availability['jam_selesai'] > jam_mulai)) |
-                ((df_availability['jam_mulai'] < jam_selesai) & (df_availability['jam_selesai'] >= jam_selesai)) |
-                ((jam_mulai <= df_availability['jam_mulai']) & (jam_selesai >= df_availability['jam_selesai']))
-            )
-        ]
-        if not busy.empty:
-            return True
-    
-    # Cek dari resource tracker
-    for slot in resource_tracker['dosen'].get(nama_dosen, []):
-        if slot['hari'] == hari:
-            if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
-               (jam_mulai < slot['jam_selesai'] <= jam_selesai) or \
-               (slot['jam_mulai'] <= jam_mulai and slot['jam_selesai'] >= jam_selesai):
-                return True
-    return False
-
-def is_schedule_conflict(resource_tracker, kelas, dosen, ruangan, hari, jam_mulai, jam_selesai):
-    """Cek apakah ada konflik jadwal"""
-    # Cek konflik kelas
-    for slot in resource_tracker['kelas'].get(kelas, []):
-        if slot['hari'] == hari:
-            if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
-               (jam_mulai < slot['jam_selesai'] <= jam_selesai):
-                return True
-    
-    # Cek konflik dosen
-    for slot in resource_tracker['dosen'].get(dosen, []):
-        if slot['hari'] == hari:
-            if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
-               (jam_mulai < slot['jam_selesai'] <= jam_selesai):
-                return True
-    
-    # Cek konflik ruangan (kecuali online)
-    if ruangan and ruangan != "Zoom":
-        for slot in resource_tracker['ruangan'].get(ruangan, []):
-            if slot['hari'] == hari:
-                if (jam_mulai <= slot['jam_mulai'] < jam_selesai) or \
-                   (jam_mulai < slot['jam_selesai'] <= jam_selesai):
-                    return True
-    
-    return False
-
-def add_schedule(resource_tracker, kelas, dosen, ruangan, hari, jam_mulai, jam_selesai):
-    """Tambahkan jadwal ke resource tracker"""
-    slot = {
-        'hari': hari,
-        'jam_mulai': jam_mulai,
-        'jam_selesai': jam_selesai
-    }
-    
-    resource_tracker['kelas'][kelas].append(slot)
-    resource_tracker['dosen'][dosen].append(slot)
-    if ruangan and ruangan != "Zoom":
-        resource_tracker['ruangan'][ruangan].append(slot)
-
-def validate_data_before_generate():
-    """Validasi data sebelum generate jadwal"""
-    df_kelas, df_matkul, df_dosen, df_dosen_matkul, _, _, _ = load_data()
+def validate_all_data(
+    df_kelas: pd.DataFrame, 
+    df_matkul: pd.DataFrame, 
+    df_dosen: pd.DataFrame, 
+    df_dosen_matkul: pd.DataFrame
+) -> List[str]:
+    """Validasi semua data sebelum generate jadwal"""
     errors = []
     
     if df_kelas is None or df_matkul is None or df_dosen is None or df_dosen_matkul is None:
         return ["Data tidak lengkap, pastikan semua sheet ada di file Excel"]
     
-    # Debug: Tampilkan data yang terbaca
-    st.write("Data mata kuliah semester 1:", df_matkul[df_matkul['semester'] == 1]['nama'].tolist())
+    # Validasi matkul wajib untuk semua semester
+    for semester, matkul_wajib in Config.MATKUL_WAJIB.items():
+        matkul_sem = df_matkul[df_matkul['semester'] == semester]
+        for m in matkul_wajib:
+            if m not in matkul_sem['nama'].values:
+                errors.append(f"Matkul wajib {m} tidak ada di semester {semester}")
     
-    # Cek matkul wajib untuk semester 1
-    matkul_wajib_sem1 = [
-        'Algoritma dan Struktur Data',
-        'Logika Informatika',
-        'Kalkulus',
-        'Statistika dan Probabilitas'
-    ]
-    matkul_sem1 = df_matkul[df_matkul['semester'] == 1]
-    for m in matkul_wajib_sem1:
-        if m not in matkul_sem1['nama'].values:
-            errors.append(f"Matkul wajib {m} tidak ada di semester 1")
+    # Validasi jenis kelas
+    jenis_kelas_valid = ['reguler', 'internasional', 'sabtu', 'karyawan', 'reguler malam']
+    invalid_jenis = df_kelas[~df_kelas['jenis'].isin(jenis_kelas_valid)]
+    if not invalid_jenis.empty:
+        errors.append(f"Jenis kelas tidak valid: {invalid_jenis['jenis'].unique()}")
     
-    # Cek hubungan dosen-matkul untuk semester 1
-    for _, matkul in matkul_sem1.iterrows():
+    # Validasi hubungan dosen-matkul
+    for _, matkul in df_matkul.iterrows():
         if df_dosen_matkul[df_dosen_matkul['id_matakuliah'] == matkul['id']].empty:
             errors.append(f"Matkul {matkul['nama']} tidak memiliki dosen")
     
     return errors
 
-def generate_jadwal():
-    """Generate jadwal kuliah secara otomatis"""
-    validation_errors = validate_data_before_generate()
-    if validation_errors:
-        st.error("Error validasi data:\n- " + "\n- ".join(validation_errors))
-        return None
+def schedule_matkul(
+    matkul: pd.Series,
+    kelas: pd.Series,
+    df_dosen: pd.DataFrame,
+    df_dosen_matkul: pd.DataFrame,
+    df_ruangan: pd.DataFrame,
+    df_availability: pd.DataFrame,
+    resource_tracker: ResourceTracker,
+    ruangan_prioritas: List[str]
+) -> Dict[str, Any]:
+    """Coba menjadwalkan satu mata kuliah"""
+    nama_kelas = kelas['nama']
+    jenis_kelas = kelas['jenis']
+    konsentrasi = kelas.get('konsentrasi', 'umum')
+    
+    # Tentukan apakah harus offline atau bisa online
+    must_offline = any(x in matkul['nama'].lower() for x in ['praktikum', 'lab', 'jaringan'])
+    
+    if must_offline:
+        is_online = False
+        ruangan_options = ruangan_prioritas.copy()
+        random.shuffle(ruangan_options)
+    else:
+        is_online = matkul['Status'].lower().strip() == 'online'
+        ruangan_options = ["Zoom"] if is_online else ruangan_prioritas.copy()
+        if not is_online:
+            random.shuffle(ruangan_options)
 
+    # Atur hari tersedia
+    hari_tersedia = Config.HARI_PRIORITAS.get(jenis_kelas.lower(), ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'])
+    
+    # Daftar dosen yang tersedia untuk matkul ini
+    dosen_ids = df_dosen_matkul[df_dosen_matkul['id_matakuliah'] == matkul['id']]['id_dosen']
+    dosen_tersedia = df_dosen[df_dosen['id'].isin(dosen_ids)]
+    
+    if dosen_tersedia.empty:
+        return {
+            'Kelas': nama_kelas,
+            'Konsentrasi': konsentrasi,
+            'Hari': 'Cek EdLink',
+            'Jam': 'Cek EdLink',
+            'Mata Kuliah': matkul['nama'],
+            'Dosen': 'Belum Ditentukan',
+            'Ruangan': 'Zoom' if is_online else 'Cek EdLink',
+            'SKS': matkul['sks'],
+            'Semester': matkul['semester'],
+            'Status': 'Online' if is_online else 'Offline',
+            'Keterangan': '⚠️ Tanpa Dosen',
+            'Warna': Config.WARNA_KELAS['Online'] if is_online else Config.WARNA_KELAS.get(konsentrasi, Config.WARNA_KELAS['Offline']),
+            'is_locked': False
+        }
+    
+    # Coba menjadwalkan
+    for _ in range(Config.MAX_SCHEDULING_ATTEMPTS):
+        random.shuffle(hari_tersedia)
+        dosen_tersedia = dosen_tersedia.sample(frac=1)  # Acak urutan dosen
+        
+        for hari in hari_tersedia:
+            jam_awal, jam_akhir = Config.JAM_OPERASIONAL.get(jenis_kelas.lower(), (dt_time(8, 0), dt_time(17, 0)))
+            
+            possible_slots = generate_time_slots(jam_awal, jam_akhir, matkul['sks'] * Config.DURASI_SKS, hari, jenis_kelas)
+            
+            for jam_mulai, jam_selesai in possible_slots:
+                for _, dosen in dosen_tersedia.iterrows():
+                    nama_dosen = dosen['nama']
+                    
+                    # Cek ketersediaan dosen
+                    if is_dosen_busy(nama_dosen, hari, jam_mulai, jam_selesai, df_availability, resource_tracker):
+                        continue
+                        
+                    if is_online:
+                        if not resource_tracker.is_conflict(nama_kelas, nama_dosen, None, hari, jam_mulai, jam_selesai):
+                            resource_tracker.add_schedule(nama_kelas, nama_dosen, "Zoom", hari, jam_mulai, jam_selesai)
+                            
+                            return {
+                                'Kelas': nama_kelas,
+                                'Konsentrasi': konsentrasi,
+                                'Hari': hari,
+                                'Jam': f"{jam_mulai.strftime('%H:%M')}-{jam_selesai.strftime('%H:%M')}",
+                                'Mata Kuliah': matkul['nama'],
+                                'Dosen': nama_dosen,
+                                'Ruangan': "Zoom",
+                                'SKS': matkul['sks'],
+                                'Semester': matkul['semester'],
+                                'Status': 'Online',
+                                'Keterangan': '✅',
+                                'Warna': Config.WARNA_KELAS['Online'],
+                                'is_locked': False
+                            }
+                    else:
+                        for ruangan in ruangan_options:
+                            if not resource_tracker.is_conflict(nama_kelas, nama_dosen, ruangan, hari, jam_mulai, jam_selesai):
+                                resource_tracker.add_schedule(nama_kelas, nama_dosen, ruangan, hari, jam_mulai, jam_selesai)
+                                
+                                return {
+                                    'Kelas': nama_kelas,
+                                    'Konsentrasi': konsentrasi,
+                                    'Hari': hari,
+                                    'Jam': f"{jam_mulai.strftime('%H:%M')}-{jam_selesai.strftime('%H:%M')}",
+                                    'Mata Kuliah': matkul['nama'],
+                                    'Dosen': nama_dosen,
+                                    'Ruangan': ruangan,
+                                    'SKS': matkul['sks'],
+                                    'Semester': matkul['semester'],
+                                    'Status': 'Offline',
+                                    'Keterangan': '✅',
+                                    'Warna': Config.WARNA_KELAS.get(konsentrasi, Config.WARNA_KELAS['Offline']),
+                                    'is_locked': False
+                                }
+    
+    # Jika gagal setelah semua percobaan
+    return {
+        'Kelas': nama_kelas,
+        'Konsentrasi': konsentrasi,
+        'Hari': 'Cek EdLink',
+        'Jam': 'Cek EdLink',
+        'Mata Kuliah': matkul['nama'],
+        'Dosen': random.choice(dosen_tersedia['nama'].tolist()),
+        'Ruangan': 'Zoom' if is_online else 'Cek EdLink',
+        'SKS': matkul['sks'],
+        'Semester': matkul['semester'],
+        'Status': 'Online' if is_online else 'Offline',
+        'Keterangan': f'⚠️ Gagal setelah {Config.MAX_SCHEDULING_ATTEMPTS}x attempt',
+        'Warna': Config.WARNA_KELAS['Online'] if is_online else Config.WARNA_KELAS.get(konsentrasi, Config.WARNA_KELAS['Offline']),
+        'is_locked': False
+    }
+
+def generate_jadwal() -> Optional[pd.DataFrame]:
+    """Generate jadwal kuliah secara otomatis dengan penjadwalan yang lebih cerdas"""
+    # Load data
     df_kelas, df_matkul, df_dosen, df_dosen_matkul, df_hari, df_ruangan, df_availability = load_data()
     if df_kelas is None or df_matkul is None or df_dosen is None or df_dosen_matkul is None:
         st.error("Data tidak lengkap, pastikan semua sheet ada di file Excel")
         return None
 
-    # Inisialisasi konsentrasi
-    df_kelas = init_konsentrasi(df_kelas)
-    if df_kelas is None:
+    # Validasi data
+    validation_errors = validate_all_data(df_kelas, df_matkul, df_dosen, df_dosen_matkul)
+    if validation_errors:
+        st.error("Error validasi data:\n- " + "\n- ".join(validation_errors))
         return None
-        
-    ruangan_prioritas = prioritize_room(df_ruangan, "B4")  # Prioritaskan ruangan B4
+
+    # Inisialisasi konsentrasi jika belum ada
+    if 'konsentrasi' not in df_kelas.columns:
+        df_kelas['konsentrasi'] = df_kelas['nama'].apply(
+            lambda x: 'umum' if x[:4] in ['TI24', 'TI23'] else random.choice(Config.KONSENTRASI_OPTIONS)
+        )
+    
+    # Prioritaskan ruangan
+    ruangan_prioritas = [r for r in df_ruangan['nama'] if Config.PRIORITAS_RUANGAN_PREFIX in r]
+    ruangan_lain = [r for r in df_ruangan['nama'] if Config.PRIORITAS_RUANGAN_PREFIX not in r]
+    ruangan_prioritas += ruangan_lain
     
     jadwal_all = []
-    resource_tracker = {
-        'kelas': defaultdict(list),
-        'dosen': defaultdict(list),
-        'ruangan': defaultdict(list)
-    }
-
-    for _, kelas in df_kelas.iterrows():
+    resource_tracker = ResourceTracker()
+    
+    progress_bar = st.progress(0)
+    total_kelas = len(df_kelas)
+    
+    for i, (_, kelas) in enumerate(df_kelas.iterrows()):
         nama_kelas = kelas['nama']
         jenis_kelas = kelas['jenis']
         konsentrasi = kelas['konsentrasi']
         prefix_kelas = nama_kelas[:4]
         
-        if prefix_kelas not in SEMESTER_KELAS:
+        if prefix_kelas not in Config.SEMESTER_KELAS:
             continue
 
-        semester = SEMESTER_KELAS[prefix_kelas]
+        semester = Config.SEMESTER_KELAS[prefix_kelas]
         
         # Filter matkul berdasarkan semester dan konsentrasi
         matkul_kelas = filter_matkul_by_konsentrasi(df_matkul, semester, konsentrasi)
@@ -382,151 +587,26 @@ def generate_jadwal():
         if matkul_kelas.empty:
             st.warning(f"Tidak ada mata kuliah untuk semester {semester}")
             continue
-
+        
+        # Prioritaskan matkul (yang SKS besar dan wajib dijadwal lebih awal)
+        matkul_kelas = prioritize_matkul(matkul_kelas)
+        
         jadwal_kelas = []
-
+        
         for _, matkul in matkul_kelas.iterrows():
-            # Tentukan apakah harus offline atau bisa online
-            must_offline = any(x in matkul['nama'].lower() for x in ['praktikum', 'lab', 'jaringan'])
-            
-            if must_offline:
-                is_online = False
-                ruangan_options = ruangan_prioritas.copy()
-                random.shuffle(ruangan_options)
-            else:
-                is_online = matkul['Status'].lower().strip() == 'online'
-                ruangan_options = ["Zoom"] if is_online else ruangan_prioritas.copy()
-                if not is_online:
-                    random.shuffle(ruangan_options)
-
-            # Atur hari tersedia
-            hari_tersedia = HARI_PRIORITAS.get(jenis_kelas.lower(), ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'])
-
-            # Proses penjadwalan
-            dosen_ids = df_dosen_matkul[df_dosen_matkul['id_matakuliah'] == matkul['id']]['id_dosen']
-            dosen_tersedia = df_dosen[df_dosen['id'].isin(dosen_ids)]
-            
-            if dosen_tersedia.empty:
-                jadwal_kelas.append({
-                    'Kelas': nama_kelas,
-                    'Konsentrasi': konsentrasi,
-                    'Hari': 'Cek EdLink',
-                    'Jam': 'Cek EdLink',
-                    'Mata Kuliah': matkul['nama'],
-                    'Dosen': 'Belum Ditentukan',
-                    'Ruangan': 'Zoom' if is_online else 'Cek EdLink',
-                    'SKS': matkul['sks'],
-                    'Semester': semester,
-                    'Status': 'Online' if is_online else 'Offline',
-                    'Keterangan': '⚠️ Tanpa Dosen',
-                    'Warna': WARNA_KELAS['Online'] if is_online else WARNA_KELAS.get(konsentrasi, WARNA_KELAS['Offline']),
-                    'is_locked': False
-                })
-                continue
-
-            scheduled = False
-            attempt_log = []
-            
-            for attempt in range(10):  # Maksimal 10x percobaan
-                random.shuffle(hari_tersedia)
-                dosen_tersedia = dosen_tersedia.sample(frac=1)  # Acak urutan dosen
-                
-                for hari in hari_tersedia:
-                    jam_awal, jam_akhir = JAM_OPERASIONAL.get(jenis_kelas.lower(), (dt_time(8, 0), dt_time(17, 0)))
-                    
-                    possible_slots = generate_time_slots(jam_awal, jam_akhir, matkul['sks'] * DURASI_SKS, hari, jenis_kelas)
-                    
-                    for jam_mulai, jam_selesai in possible_slots:
-                        for _, dosen in dosen_tersedia.iterrows():
-                            nama_dosen = dosen['nama']
-                            
-                            # Cek beban dosen
-                            current_jadwal = jadwal_all + jadwal_kelas
-                            if current_jadwal:
-                                df_jadwal = pd.DataFrame(current_jadwal)
-                                if not cek_beban_dosen(nama_dosen, df_jadwal):
-                                    attempt_log.append(f"Dosen {nama_dosen} melebihi beban maksimal")
-                                    continue
-                                    
-                            if is_dosen_busy(nama_dosen, hari, jam_mulai, jam_selesai, df_availability, resource_tracker):
-                                attempt_log.append(f"Dosen {nama_dosen} sibuk di {hari} {jam_mulai}-{jam_selesai}")
-                                continue
-                                
-                            if is_online:
-                                if not is_schedule_conflict(resource_tracker, nama_kelas, nama_dosen, None, hari, jam_mulai, jam_selesai):
-                                    add_schedule(resource_tracker, nama_kelas, nama_dosen, "Zoom", hari, jam_mulai, jam_selesai)
-                                    
-                                    jadwal_kelas.append({
-                                        'Kelas': nama_kelas,
-                                        'Konsentrasi': konsentrasi,
-                                        'Hari': hari,
-                                        'Jam': f"{jam_mulai.strftime('%H:%M')}-{jam_selesai.strftime('%H:%M')}",
-                                        'Mata Kuliah': matkul['nama'],
-                                        'Dosen': nama_dosen,
-                                        'Ruangan': "Zoom",
-                                        'SKS': matkul['sks'],
-                                        'Semester': semester,
-                                        'Status': 'Online',
-                                        'Keterangan': '✅',
-                                        'Warna': WARNA_KELAS['Online'],
-                                        'is_locked': False
-                                    })
-                                    scheduled = True
-                                    break
-                            else:
-                                for ruangan in ruangan_options:
-                                    if not is_schedule_conflict(resource_tracker, nama_kelas, nama_dosen, ruangan, hari, jam_mulai, jam_selesai):
-                                        add_schedule(resource_tracker, nama_kelas, nama_dosen, ruangan, hari, jam_mulai, jam_selesai)
-                                        
-                                        jadwal_kelas.append({
-                                            'Kelas': nama_kelas,
-                                            'Konsentrasi': konsentrasi,
-                                            'Hari': hari,
-                                            'Jam': f"{jam_mulai.strftime('%H:%M')}-{jam_selesai.strftime('%H:%M')}",
-                                            'Mata Kuliah': matkul['nama'],
-                                            'Dosen': nama_dosen,
-                                            'Ruangan': ruangan,
-                                            'SKS': matkul['sks'],
-                                            'Semester': semester,
-                                            'Status': 'Offline',
-                                            'Keterangan': '✅',
-                                            'Warna': WARNA_KELAS.get(konsentrasi, WARNA_KELAS['Offline']),
-                                            'is_locked': False
-                                        })
-                                        scheduled = True
-                                        break
-                        
-                            if scheduled:
-                                break
-                        if scheduled:
-                            break
-                    if scheduled:
-                        break
-                if scheduled:
-                    break
-            
-            if not scheduled:
-                jadwal_kelas.append({
-                    'Kelas': nama_kelas,
-                    'Konsentrasi': konsentrasi,
-                    'Hari': 'Cek EdLink',
-                    'Jam': 'Cek EdLink',
-                    'Mata Kuliah': matkul['nama'],
-                    'Dosen': random.choice(dosen_tersedia['nama'].tolist()),
-                    'Ruangan': 'Zoom' if is_online else 'Cek EdLink',
-                    'SKS': matkul['sks'],
-                    'Semester': semester,
-                    'Status': 'Online' if is_online else 'Offline',
-                    'Keterangan': f'⚠️ Gagal setelah 10x attempt\n' + "\n".join(attempt_log[-3:]),
-                    'Warna': WARNA_KELAS['Online'] if is_online else WARNA_KELAS.get(konsentrasi, WARNA_KELAS['Offline']),
-                    'is_locked': False
-                })
-
+            jadwal = schedule_matkul(
+                matkul, kelas, df_dosen, df_dosen_matkul, 
+                df_ruangan, df_availability, resource_tracker, 
+                ruangan_prioritas
+            )
+            jadwal_kelas.append(jadwal)
+        
         jadwal_all.extend(jadwal_kelas)
+        progress_bar.progress((i + 1) / total_kelas)
     
     return pd.DataFrame(jadwal_all)
 
-def jadwal_to_calendar_events(jadwal_df):
+def jadwal_to_calendar_events(jadwal_df: pd.DataFrame) -> List[Dict[str, Any]]:
     """Konversi jadwal ke format event kalender"""
     events = []
     
@@ -553,7 +633,7 @@ def jadwal_to_calendar_events(jadwal_df):
                 'title': f"{row['Mata Kuliah']} ({row['Kelas']})",
                 'start': f"2023-01-{day_number:02d}T{start_time.strftime('%H:%M:%S')}",
                 'end': f"2023-01-{day_number:02d}T{end_time.strftime('%H:%M:%S')}",
-                'color': row.get('Warna', WARNA_KELAS['Offline']),
+                'color': row.get('Warna', Config.WARNA_KELAS['Offline']),
                 'extendedProps': {
                     'dosen': row.get('Dosen', ''),
                     'sks': row.get('SKS', 0),
@@ -564,11 +644,11 @@ def jadwal_to_calendar_events(jadwal_df):
                 }
             })
         except Exception as e:
-            st.warning(f"Gagal memproses jadwal: {row.get('Mata Kuliah', 'Unknown')}. Error: {str(e)}")
+            logging.warning(f"Gagal memproses jadwal: {row.get('Mata Kuliah', 'Unknown')}. Error: {str(e)}")
     
     return events
 
-def show_calendar_view(jadwal_df):
+def show_calendar_view(jadwal_df: pd.DataFrame) -> None:
     """Tampilkan jadwal dalam bentuk kalender interaktif"""
     if calendar is None:
         st.error("Fitur kalender membutuhkan package streamlit-calendar. Install dengan: pip install streamlit-calendar")
@@ -626,7 +706,11 @@ def show_calendar_view(jadwal_df):
                 options=calendar_options, 
                 key="month_calendar")
 
-def edit_jadwal_manual(jadwal_df, df_dosen, df_ruangan):
+def edit_jadwal_manual(
+    jadwal_df: pd.DataFrame, 
+    df_dosen: pd.DataFrame, 
+    df_ruangan: pd.DataFrame
+) -> pd.DataFrame:
     """Fitur edit jadwal manual"""
     if jadwal_df.empty:
         return jadwal_df
@@ -663,7 +747,7 @@ def edit_jadwal_manual(jadwal_df, df_dosen, df_ruangan):
         return edited_df
     return jadwal_df
 
-def generate_report(jadwal_df):
+def generate_report(jadwal_df: pd.DataFrame) -> Dict[str, Any]:
     """Generate laporan analisis jadwal"""
     if jadwal_df.empty:
         return {
@@ -686,7 +770,7 @@ def generate_report(jadwal_df):
     
     return report
 
-def send_notification(email, subject, message):
+def send_notification(email: str, subject: str, message: str) -> bool:
     """Kirim notifikasi via email"""
     try:
         msg = MIMEText(message)
@@ -700,10 +784,10 @@ def send_notification(email, subject, message):
             server.send_message(msg)
         return True
     except Exception as e:
-        st.error(f"Gagal mengirim email: {str(e)}")
+        logging.error(f"Gagal mengirim email: {str(e)}")
         return False
 
-def export_to_ical(jadwal_df):
+def export_to_ical(jadwal_df: pd.DataFrame) -> bytes:
     """Ekspor jadwal ke format iCal"""
     cal = Calendar()
     cal.add('prodid', '-//Jadwal Kuliah//univ.ac.id//')
@@ -740,13 +824,14 @@ def export_to_ical(jadwal_df):
             
             cal.add_component(event)
         except Exception as e:
-            st.warning(f"Gagal memproses jadwal {row['Mata Kuliah']}: {str(e)}")
+            logging.warning(f"Gagal memproses jadwal {row['Mata Kuliah']}: {str(e)}")
     
     return cal.to_ical()
 
 def main():
     st.set_page_config(layout="wide", page_title="Sistem Penjadwalan Kuliah TI", page_icon="🎓")
 
+    # Initialize session state variables
     if 'jadwal_df' not in st.session_state:
         st.session_state.jadwal_df = None
 
@@ -790,7 +875,9 @@ def main():
         
         menu_option = st.radio(
             "Pilihan Menu",
-            ["🏠 Beranda", "📅 Generate Jadwal", "👨‍🏫 Manajemen Dosen", "⚙️ Kelola Konsentrasi", "🗓️ Kalender Interaktif", "✏️ Edit Manual", "📊 Laporan"],
+            ["🏠 Beranda", "📅 Generate Jadwal", "👨‍🏫 Manajemen Dosen", "⚙️ Kelola Konsentrasi", 
+             "🗓️ Kalender Interaktif", "✏️ Edit Manual", "📊 Laporan", "📆 Ketersediaan Dosen", 
+             "👨‍🏫 View Jadwal Dosen"],
             label_visibility="collapsed"
         )
         
@@ -810,6 +897,8 @@ def main():
         - **Kalender Interaktif**: Lihat jadwal dalam tampilan kalender yang informatif
         - **Edit Manual**: Edit jadwal secara manual
         - **Laporan**: Analisis jadwal dan beban mengajar
+        - **Ketersediaan Dosen**: Atur ketersediaan jam mengajar dosen
+        - **View Jadwal Dosen**: Lihat jadwal mengajar per dosen
         """)
         
         st.info("""
@@ -822,6 +911,8 @@ def main():
         6. Kalender interaktif dengan detail lengkap
         7. Ekspor ke format iCal
         8. Notifikasi email
+        9. Manajemen ketersediaan dosen
+        10. View jadwal per dosen
         """)
 
     elif menu_option == "📅 Generate Jadwal":
@@ -850,7 +941,7 @@ def main():
                     st.session_state.jadwal_df = None
                     st.rerun()
         
-        if st.session_state.jadwal_df is not None:
+        if 'jadwal_df' in st.session_state and st.session_state.jadwal_df is not None:
             st.success("Jadwal berhasil dibuat!")
             
             with st.expander("🔍 Filter Jadwal", expanded=True):
@@ -1057,7 +1148,7 @@ def main():
             column_config={
                 "konsentrasi": st.column_config.SelectboxColumn(
                     "Konsentrasi",
-                    options=KONSENTRASI_OPTIONS,
+                    options=Config.KONSENTRASI_OPTIONS,
                     required=True
                 )
             },
@@ -1079,7 +1170,7 @@ def main():
     elif menu_option == "🗓️ Kalender Interaktif":
         st.title("🗓️ Kalender Interaktif")
         
-        if st.session_state.jadwal_df is None:
+        if 'jadwal_df' not in st.session_state or st.session_state.jadwal_df is None:
             st.warning("Generate jadwal terlebih dahulu")
         else:
             show_calendar_view(st.session_state.jadwal_df)
@@ -1121,6 +1212,169 @@ def main():
             if st.button("📧 Kirim Laporan ke Email"):
                 if send_notification("admin@univ.ac.id", "Laporan Jadwal Kuliah", str(report)):
                     st.success("Laporan terkirim!")
+
+    elif menu_option == "📆 Ketersediaan Dosen":
+        st.title("📆 Kelola Ketersediaan Dosen")
+        
+        df_dosen = load_data()[2]
+        df_availability = load_data()[6]
+        
+        tab1, tab2 = st.tabs(["Tambah Ketersediaan", "Import dari File"])
+        
+        with tab1:
+            st.subheader("Tambah Ketersediaan Dosen")
+            with st.form("form_availability"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    selected_dosen = st.selectbox(
+                        "Pilih Dosen",
+                        options=df_dosen['nama'].tolist() if df_dosen is not None else []
+                    )
+                    hari = st.selectbox(
+                        "Hari",
+                        options=["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"]
+                    )
+                with col2:
+                    jam_mulai = st.time_input("Jam Mulai", value=dt_time(8, 0))
+                    jam_selesai = st.time_input("Jam Selesai", value=dt_time(17, 0))
+                
+                submitted = st.form_submit_button("Simpan Ketersediaan")
+                
+                if submitted:
+                    if not selected_dosen:
+                        st.error("Pilih dosen terlebih dahulu!")
+                    elif jam_mulai >= jam_selesai:
+                        st.error("Jam selesai harus setelah jam mulai!")
+                    else:
+                        new_availability = pd.DataFrame([{
+                            'dosen': selected_dosen,
+                            'hari': hari,
+                            'jam_mulai': jam_mulai,
+                            'jam_selesai': jam_selesai
+                        }])
+                        
+                        if df_availability is None or df_availability.empty:
+                            updated_availability = new_availability
+                        else:
+                            updated_availability = pd.concat([df_availability, new_availability], ignore_index=True)
+                        
+                        if save_to_excel(updated_availability, "availability"):
+                            st.success("Ketersediaan dosen berhasil disimpan!")
+                            st.rerun()
+            
+            st.divider()
+            st.subheader("Daftar Ketersediaan Dosen")
+            if df_availability is not None and not df_availability.empty:
+                st.dataframe(df_availability, use_container_width=True, hide_index=True)
+                
+                # Fitur hapus availability
+                st.subheader("Hapus Ketersediaan")
+                if not df_availability.empty:
+                    selected_index = st.selectbox(
+                        "Pilih Ketersediaan untuk Dihapus",
+                        options=df_availability.index,
+                        format_func=lambda x: f"{df_availability.loc[x, 'dosen']} - {df_availability.loc[x, 'hari']} {df_availability.loc[x, 'jam_mulai']}-{df_availability.loc[x, 'jam_selesai']}"
+                    )
+                    
+                    if st.button("🗑️ Hapus Ketersediaan", type="secondary"):
+                        updated_availability = df_availability.drop(index=selected_index).reset_index(drop=True)
+                        if save_to_excel(updated_availability, "availability"):
+                            st.success("Ketersediaan dihapus!")
+                            st.rerun()
+            else:
+                st.info("Belum ada data ketersediaan dosen")
+        
+        with tab2:
+            st.subheader("Import Ketersediaan dari File")
+            st.info("Format file harus Excel/CSV dengan kolom: dosen, hari, jam_mulai, jam_selesai")
+            
+            uploaded_file = st.file_uploader("Upload File", type=["xlsx", "csv"])
+            
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.xlsx'):
+                        df_import = pd.read_excel(uploaded_file)
+                    else:
+                        df_import = pd.read_csv(uploaded_file)
+                    
+                    # Validasi kolom
+                    required_cols = ['dosen', 'hari', 'jam_mulai', 'jam_selesai']
+                    if all(col in df_import.columns for col in required_cols):
+                        st.success("File berhasil dibaca")
+                        st.dataframe(df_import, use_container_width=True)
+                        
+                        if st.button("💾 Simpan Data Import"):
+                            if df_availability is None or df_availability.empty:
+                                updated_availability = df_import
+                            else:
+                                updated_availability = pd.concat([df_availability, df_import], ignore_index=True)
+                            
+                            if save_to_excel(updated_availability, "availability"):
+                                st.success("Data ketersediaan berhasil diimport!")
+                                st.rerun()
+                    else:
+                        st.error("Format file tidak valid. Pastikan ada kolom: dosen, hari, jam_mulai, jam_selesai")
+                except Exception as e:
+                    st.error(f"Gagal membaca file: {str(e)}")
+
+    elif menu_option == "👨‍🏫 View Jadwal Dosen":
+        st.title("👨‍🏫 View Jadwal Dosen")
+        
+        if 'jadwal_df' not in st.session_state or st.session_state.jadwal_df is None:
+            st.warning("Belum ada jadwal yang digenerate")
+        else:
+            df_dosen = load_data()[2]
+            jadwal_df = st.session_state.jadwal_df
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_dosen = st.selectbox(
+                    "Pilih Dosen",
+                    options=sorted(jadwal_df['Dosen'].unique()),
+                    index=0
+                )
+            
+            with col2:
+                st.write("")  # Spacer
+                if st.button("🔄 Refresh"):
+                    st.rerun()
+            
+            # Filter jadwal berdasarkan dosen
+            filtered_jadwal = jadwal_df[jadwal_df['Dosen'] == selected_dosen]
+            
+            if not filtered_jadwal.empty:
+                # Hitung total SKS
+                total_sks = filtered_jadwal['SKS'].sum()
+                st.metric(f"Total SKS {selected_dosen}", total_sks)
+                
+                # Tampilkan jadwal
+                st.subheader(f"Jadwal Mengajar {selected_dosen}")
+                st.dataframe(
+                    filtered_jadwal.sort_values(['Hari', 'Jam']),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Warna": st.column_config.Column(disabled=True)
+                    }
+                )
+                
+                # Ekspor ke Excel
+                excel_buffer = io.BytesIO()
+                filtered_jadwal.to_excel(excel_buffer, index=False)
+                excel_buffer.seek(0)
+                
+                st.download_button(
+                    label="📊 Ekspor ke Excel",
+                    data=excel_buffer,
+                    file_name=f"jadwal_{selected_dosen}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+                # Tampilkan dalam bentuk kalender
+                st.subheader("Kalender")
+                show_calendar_view(filtered_jadwal)
+            else:
+                st.warning(f"Tidak ada jadwal untuk dosen {selected_dosen}")
 
     if st.sidebar.checkbox("🔍 Tampilkan Data Mentah"):
         st.title("Data Mentah")
